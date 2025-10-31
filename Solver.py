@@ -21,11 +21,14 @@ class Problem:
 	_attributes = ('N', 'dt', 'stage_cost', 'final_cost', 'dynamics_ct')
 	# Optional attributes
 	_attributes_opt = ('input_constraints', 'state_constraints')
+	# Parameter names for optimization problems
+	_param_keys = ("x0", )
 
 	def __init__(self, nx, nu, np=None):
 		self.nx = nx
 		self.nu = nu
 		self.np = nx if np is None else np
+		self.__parameters = dict()
 
 		for attr in self.__class__._attributes:
 			setattr(self, "_" + attr, None)
@@ -33,17 +36,29 @@ class Problem:
 		for attr in self.__class__._attributes_opt:
 			setattr(self, "_" + attr, [])
 
+	def __getitem__(self, key):
+		return self.__parameters[key]
+
+	def __setitem__(self, key, val):
+		if key not in self._param_keys:
+			msg = f"only keys in {self._param_keys} allowed (got {key} instead)"
+			raise KeyError(msg)
+		self.__parameters[key] = val
+
 	def dynamics_dt(self, xk: list, uk: list, P: dict = None):
 		# P: parameter dictionary
 		dx = self.dynamics_ct(xk, uk, P)
 		return [xk[i] + self.dt * dx[i] for i in range(self.nx)]
 
-	def cost(self, u: list, P: dict):
-		tot = 0
-		xk = P["x0"]
+	def cost(self, u_seq: list, P: dict):
+		if P is None:
+			P = dict()
+		xk = P["x0"] if "x0" in P else self["x0"]
+		tot = 0.0
 		for k in range(self.N):
-			tot += self.stage_cost(xk, u[k], P)
-			xk = self.dynamics_dt(xk, u[k], P)
+			uk = u_seq[k]
+			tot += self.stage_cost(xk, uk, P)
+			xk = self.dynamics_dt(xk, uk, P)
 		tot += self.final_cost(xk, P)
 		return tot
 
@@ -61,18 +76,57 @@ class Problem:
 			msg = f"Attributes '{', '.join(undef)}' have not been provided"
 			raise NotImplementedError(msg)
 
+	def update_parameters(self, u_seq, substeps=10):
+		x0 = self["x0"]
+		u0 = u_seq[0]
+		dt = self.dt / substeps
+		for j in range(substeps):
+			dx = self.dynamics_ct(x0, u0)
+			x0 = [x0[i] + dt * dx[i] for i in range(self.nx)]
+		self["x0"] = x0
+
+	@classmethod
+	def parameters2vector(cls, P: dict):
+		# converts dictionary of paramters to a list
+		vecp = []
+		for param in cls._param_keys:
+			val = P[param]
+			if type(val) is not list:
+				val = [val]
+			vecp.extend(val)
+		return vecp
+
+	@classmethod
+	def vector2parameters(cls, vecp):
+		# Converts a concatenated parameter vector [p_1 ... p_r]
+		# into a dictionary of parameters
+		return {"x0": vecp}
+
+	def vector2inputs(self, vecu):
+		# Converts a concatenated input vector [u_0 ... u_{N-1}]
+		# into a list of inputs [[u_0], ... [u_{N-1}]]
+		N = self.N
+		nu = self.nu
+		U = []
+		for k in range(N):
+			U.append(vecu[k * nu:(k + 1) * nu])
+		return U
+
+	@property
+	def parameters(self):
+		return self.__parameters
+
+	@property
+	def parameters_vector(self):
+		return self.parameters2vector(self.__parameters)
+
 	@property
 	def dynamics_ct(self):
 		return self._dynamics_ct
 
 	@dynamics_ct.setter
 	def dynamics_ct(self, func):
-		self._dynamics_ct = func  # cs.Function('f', [x, u], [f])
-
-	@property
-	def all_attributes(self):
-		return tuple(list(self.__class__._attributes)
-			+ list(self.__class__._attributes_opt))
+		self._dynamics_ct = func
 
 	@property
 	def N(self):
@@ -132,25 +186,34 @@ class Problem:
 # 	def __init__(self, x_var, u_var, p_var):
 # 		super().__init__(x_var, u_var, p_var)
 
-# 	def dynamics_dt(self, x, u, x_, u_):
-# 		f_ = self.dynamics_ct(x_, u_)
+# 	def dynamics_dt(self, xk: list, uk: list, P: dict = None):
+# 		# P: parameter dictionary
+# 		x_ = P["x_"]
+# 		u_ = P["u_"]
 # 		A = self.Jxf(x_, u_)
 # 		B = self.Juf(x_, u_)
-# 		dx = cs.vertcat(*x) - cs.vertcat(*x_)
-# 		du = cs.vertcat(*u) - cs.vertcat(*u_)
-# 		return x + self.dt * (f_ + A @ dx + B @ du)
-# 		#
+# 		f_ = self.dynamics_ct(xk, uk, P)
+# 		dx = cs.vertcat(*xk) - cs.vertcat(*x_)
+# 		du = cs.vertcat(*uk) - cs.vertcat(*u_)
+# 		return xk + self.dt * (f_ + A @ dx + B @ du)
 # 		# TODO: make this more reliable and consistent
 # 		# return x + self.dt * (f_ + A @ (x - x_) + B @ (u - u_))
 
 # 	@Problem.dynamics_ct.setter
 # 	def dynamics_ct(self, func):
-# 		Problem.dynamics_ct.fset(self, func)
-# 		x = self.x
-# 		u = self.u
-# 		f = func(x, u)
-# 		self.Jxf = cs.Function('Jxf', [x, u], [cs.jacobian(f, x)])
-# 		self.Juf = cs.Function('Juf', [x, u], [cs.jacobian(f, u)])
+# 		self._dynamics_ct = func
+# 		x = cs.SX.sym("x", self.nx)
+# 		u = cs.SX.sym("u", self.nu)
+# 		self._JxF = cs.Function('JxF', [x, u], [cs.jacobian(func(x, u), x)])
+# 		self._JuF = cs.Function('JuF', [x, u], [cs.jacobian(func(x, u), u)])
+
+# 	@property
+# 	def JxF(self):
+# 		return self._JxF
+
+# 	@property
+# 	def JuF(self):
+# 		return self._JuF
 
 
 # =============================================================================
@@ -159,16 +222,13 @@ class Problem:
 
 class Solver:
 
-	_param_keys = ("x0",)
-
 	def __init__(self, problem, name, folder="python_build"):
-		problem.check()
 		self.name = name
 		self.folder = folder
 		self.problem = problem
 
 	def check(self):
-		pass
+		self.problem.check()
 
 	def initialize(self, build=True, tol=1e-5):
 		self.check()
@@ -182,14 +242,14 @@ class Solver:
 		self.solver = module.solver()
 
 	def make_problem(self):
-		# optimization parameter vector (initial state)
-		vecp = cs.SX.sym("p", self.problem.np)
 		# optimization variable (input sequence)
 		vecu = cs.SX.sym("u_seq", self.problem.N * self.problem.nu)
-		P = self.vector2parameters(vecp)
-		u = self.vector2inputs(vecu)
-		cost = self.problem.cost(u, P)
-		# Bound input constraints
+		U = self.problem.vector2inputs(vecu)
+		# optimization parameter vector (initial state, ...)
+		vecp = cs.SX.sym("p", self.problem.np)
+		P = self.problem.vector2parameters(vecp)
+		# construct problem
+		cost = self.problem.cost(U, P)
 		input_constraints = self.problem.input_constraints
 		problem = og.builder.Problem(vecu, vecp, cost) \
 			.with_constraints(input_constraints)
@@ -210,96 +270,30 @@ class Solver:
 			meta, build_config, solver_config)
 		return builder
 
-	def solve(self, debug=False):
-		vecp = self.parameters_vector
+	def do_one_step(self, debug=False):
 		if debug:
 			# TODO
 			raise NotImplementedError
 		nu = self.problem.nu
+		vecp = self.problem.parameters_vector
 		init = self.solution[nu:] + self.solution[-nu:]
 		out = self.solver.run(p=vecp, initial_guess=init)
 		self.solution = out.solution
-		return self.vector2inputs(self.solution)
+		return self.problem.vector2inputs(self.solution)
 
-	def run(self, x0, steps, debug=False):
-		self.x0 = x0 + []
+	def run(self, x0, steps, substeps=10, debug=False):
 		self.state_sequence = [x0 + []]
 		self.input_sequence = []
-		x = x0
-		nu = self.problem.nu
+		self.problem["x0"] = x0 + []
 		for k in range(steps):
 			# Print progress
 			print('.', end='\n' if k % 50 == 49 else '')
 			# Solve MPC problem
-			self.x0 = x
-			self.solve(debug=debug)
-			u = self.solution[:nu]
-			P = self.parameters
-			x_next = self.problem.dynamics_dt(x, u, P)
-			self.state_sequence.append(x_next)
-			self.input_sequence.append(u)
-			x = x_next
-
-	# ==  Converters  =========================================================
-
-	def vector2inputs(self, vecu):
-		# Converts a concatenated input vector [u_0 ... u_{N-1}]
-		# into a list of inputs [[u_0], ... [u_{N-1}]]
-		N = self.problem.N
-		nu = self.problem.nu
-		u = []
-		for k in range(N):
-			u.append(vecu[k * nu:(k + 1) * nu])
-		return u
-
-	def vector2parameters(self, vecp):
-		# Converts a concatenated parameter vector [p_1 ... p_r]
-		# into a dictionary of parameters
-		return {"x0": vecp}
-
-	@property
-	def parameters_vector(self):
-		P = self.parameters
-		vecp = []
-		for param in self.param_keys:
-			val = P[param]
-			if type(val) is not list:
-				val = [val]
-			vecp.extend(val)
-		return vecp
-
-	@property
-	def parameters(self):
-		return {param: self.__getattribute__(param) for param in self.param_keys}
-
-	@property
-	def param_keys(self):
-		return self._param_keys
-
-# x = cs.SX.sym("x", 3)
-# u = cs.SX.sym("u", 1)
-# p = cs.SX.sym("p", 3)
-
-
-# def f(x, u):
-# 	f1 = cs.sin(x[0] * u[0])
-# 	f2 = x[0] + 2 * u[0] + x[2]**2
-# 	f3 = x[1] - u[0]
-# 	return cs.vertcat(f1, f2, f3)
-
-
-# P = Problem(x, u, p)
-# P.dt = 0.1
-# P.N = 4
-# P.dynamics_ct = f
-
-# print(P.dynamics_ct([1, 2, 0], 1))
-# # print(P.dynamics_dt([1, 2, 0], [1]))
-# print(P.dynamics_dt([1, 2, 0], [1]))
-# print(P.dynamics_dt([1, 2, 0], [1]))
-
-# PL = P.linearize()
-# print(PL.Jxf([1, 2, 0], [1]))
-# # print(P.dynamics_dt([1, 2, 0], [1]))
-# print(PL.dynamics_dt([1, 2, 0], [1], [1, 2, 0], [1]))
-# print(PL.dynamics_dt([1, 2, 0], [1], [0, 0, 0], [0]))
+			u_seq = self.do_one_step(debug=debug)
+			# Apply input u0
+			self.problem.update_parameters(u_seq, substeps=substeps)
+			# Update state x0 in solver
+			x0 = self.problem["x0"]
+			# Record data
+			self.state_sequence.append(x0)
+			self.input_sequence.append(u_seq[0])
