@@ -15,7 +15,7 @@ import importlib
 # Problem class
 # =============================================================================
 
-class Problem:
+class ProblemMPC:
 
 	# Attributes to be provided
 	_attributes = ('N', 'dt', 'stage_cost', 'final_cost', 'dynamics_ct')
@@ -84,7 +84,7 @@ class Problem:
 	def x_next(self, xk: cs.DM, uk: cs.DM, P: dict = None, substeps=1) -> cs.DM:
 		dt = self.dt / substeps
 		for j in range(substeps):
-			dx = self.dynamics_ct(xk=xk, uk=uk, P=P)
+			dx = self.dynamics_ct(x=xk, u=uk, P=P)
 			xk = xk + dt * dx
 		return xk
 
@@ -107,7 +107,7 @@ class Problem:
 	def extend(x, val):
 		if type(val) is list:
 			for val_i in val:
-				x = Problem.extend(x, val_i)
+				x = ProblemMPC.extend(x, val_i)
 			return x
 		return x + cs.vertsplit(val)
 
@@ -139,6 +139,18 @@ class Problem:
 	@dynamics_ct.setter
 	def dynamics_ct(self, func):
 		self._dynamics_ct = func
+		x = cs.SX.sym("x", self.nx)
+		u = cs.SX.sym("u", self.nu)
+		self._JxF = cs.Function('JxF', [x, u], [cs.jacobian(func(x, u), x)])
+		self._JuF = cs.Function('JuF', [x, u], [cs.jacobian(func(x, u), u)])
+
+	@property
+	def JxF(self):
+		return self._JxF
+
+	@property
+	def JuF(self):
+		return self._JuF
 
 	@property
 	def N(self):
@@ -190,10 +202,59 @@ class Problem:
 
 
 # =============================================================================
+# ProblemLMPC0 class
+# =============================================================================
+
+class ProblemLMPC0(ProblemMPC):
+
+	# Parameter names for optimization problems
+	_param_keys = ("x0", "u0")
+
+	def __init__(self, nx, nu):
+		super().__init__(nx, nu)
+		self.np = nx + nu
+
+	def initialize(self, x0: cs.DM):
+		super().initialize(x0=x0)
+		u0 = [0.0] * self.nu
+		self["u0"] = cs.vertcat(*u0)
+
+	def dynamics_dt(self, xk: cs.DM, uk: cs.DM, k: int = None, P: dict = None) -> cs.DM:
+		# k: stage
+		# P: parameter dictionary
+		x_ = P["x0"]
+		u_ = P["u0"]
+		A_ = self.JxF(x_, u_)
+		B_ = self.JuF(x_, u_)
+		f_ = self.dynamics_ct(x=x_, u=u_, P=P)
+		dx = xk - x_
+		du = uk - u_
+		return xk + self.dt * (f_ + A_ @ dx + B_ @ du)
+
+	def update_parameters(self, u_seq: list, substeps=1):
+		x0 = self["x0"]
+		u0 = u_seq[0]
+		P = self.parameters
+		x1 = self.x_next(xk=x0, uk=u0, P=P, substeps=substeps)
+		self["x0"] = x1
+		self["u0"] = u_seq[1]
+
+	def vector2parameters(self, vecp: list) -> dict:
+		# Converts a concatenated parameter vector [p_1 ... p_r]
+		# into a dictionary of parameters
+		# vecp is a vector of the form
+		# [x0 = x1_prev, u0 = u1_prev]
+		P = dict()
+		P["x0"] = vecp[:self.nx]
+		P["u0"] = vecp[self.nx:]
+		return P
+
+
+# =============================================================================
 # ProblemLMPC class
 # =============================================================================
 
-class ProblemLMPC(Problem):
+class ProblemLMPC(ProblemMPC):
 
 	# Parameter names for optimization problems
 	_param_keys = ("x0", "x_seq", "u_seq")
@@ -213,12 +274,12 @@ class ProblemLMPC(Problem):
 		# P: parameter dictionary
 		x_ = P["x_seq"][k]
 		u_ = P["u_seq"][min(k, self.N - 2)]
-		A = self.JxF(x_, u_)
-		B = self.JuF(x_, u_)
-		f_ = self.dynamics_ct(xk=xk, uk=uk, P=P)
+		A_ = self.JxF(x_, u_)
+		B_ = self.JuF(x_, u_)
+		f_ = self.dynamics_ct(x=x_, u=u_, P=P)
 		dx = xk - x_
 		du = uk - u_
-		return xk + self.dt * (f_ + A @ dx + B @ du)
+		return xk + self.dt * (f_ + A_ @ dx + B_ @ du)
 
 	def x_sequence(self, x0: cs.DM, u_seq: list, substeps=1):
 		P = self.parameters
@@ -259,27 +320,11 @@ class ProblemLMPC(Problem):
 			P["u_seq"].append(vecp[index_u + k * nu:index_u + (k + 1) * nu])
 		return P
 
-	@Problem.N.setter
+	@ProblemMPC.N.setter
 	def N(self, N):
 		self._N = N
 		# update number of parameters ([x0, x0_, x1_ ... xN_, u0_ ... u(N-2)_])
 		self.np = self.nx * (N + 1) + self.nu * (N - 1)
-
-	@Problem.dynamics_ct.setter
-	def dynamics_ct(self, func):
-		self._dynamics_ct = func
-		x = cs.SX.sym("x", self.nx)
-		u = cs.SX.sym("u", self.nu)
-		self._JxF = cs.Function('JxF', [x, u], [cs.jacobian(func(x, u), x)])
-		self._JuF = cs.Function('JuF', [x, u], [cs.jacobian(func(x, u), u)])
-
-	@property
-	def JxF(self):
-		return self._JxF
-
-	@property
-	def JuF(self):
-		return self._JuF
 
 
 # =============================================================================
@@ -288,7 +333,7 @@ class ProblemLMPC(Problem):
 
 class Solver:
 
-	def __init__(self, problem: Problem, name: str, folder="python_build"):
+	def __init__(self, problem: ProblemMPC, name: str, folder="python_build"):
 		self.name = name
 		self.folder = folder
 		self.problem = problem
