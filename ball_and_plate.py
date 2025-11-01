@@ -14,7 +14,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 build = False
-# build = True
+build = True
 
 name = "ball_and_plate"
 folder = "python_build"
@@ -23,12 +23,13 @@ mass_ball = 1
 moment_inertia = 0.0005
 gravity_acceleration = 9.8044
 dt = 0.01
-# dt = 0.0001
 nx = 4
 nu = 1
 N = 15
 
-x0 = [0.1, -0.05, 0, 0.0]
+substeps = 10
+
+x0 = [0.1, -0.5, 0.0, 0.0]
 steps = 2000
 
 U = og.constraints.BallInf(None, 0.95)
@@ -64,8 +65,9 @@ P.input_constraints = U
 
 
 S = Solver(problem=P, name=name)
+S.substeps = substeps
 S.initialize(build=build)
-S.run(x0, steps, substeps=1)
+S.run(x0, steps)
 
 
 ss = S.state_sequence
