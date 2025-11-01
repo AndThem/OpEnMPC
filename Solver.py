@@ -24,10 +24,10 @@ class Problem:
 	# Parameter names for optimization problems
 	_param_keys = ("x0", )
 
-	def __init__(self, nx, nu, np=None):
+	def __init__(self, nx, nu):
 		self.nx = nx
 		self.nu = nu
-		self.np = nx if np is None else np
+		self.np = nx  # number of parameters (only x0)
 		self.__parameters = dict()
 
 		for attr in self.__class__._attributes:
@@ -45,9 +45,13 @@ class Problem:
 			raise KeyError(msg)
 		self.__parameters[key] = val
 
-	def dynamics_dt(self, xk: cs.DM, uk: cs.DM, P: dict = None) -> cs.DM:
+	def initialize(self, x0: cs.DM):
+		self["x0"] = x0 if type(x0) is cs.DM else cs.vertcat(*x0)
+
+	def dynamics_dt(self, xk: cs.DM, uk: cs.DM, k: int = None, P: dict = None) -> cs.DM:
+		# k: stage
 		# P: parameter dictionary
-		return self.x_next(xk, uk, P, substeps=1)
+		return self.x_next(xk=xk, uk=uk, P=P, substeps=1)
 
 	def cost(self, u_seq: list, P: dict) -> cs.DM:
 		if P is None:
@@ -56,18 +60,18 @@ class Problem:
 		tot = 0.0
 		for k in range(self.N):
 			uk = u_seq[k]
-			tot += self.stage_cost(xk, uk, P)
-			xk = self.dynamics_dt(xk, uk, P)
-		tot += self.final_cost(xk, P)
+			tot += self.stage_cost(xk=xk, uk=uk, k=k, P=P)
+			xk = self.dynamics_dt(xk=xk, uk=uk, k=k, P=P)
+		tot += self.final_cost(xN=xk, P=P)
 		return tot
 
-# 	def linearize(self):
-# 		P = ProblemLMPC(self.x, self.u, self.p)
-# 		for attr in self.all_attributes:
-# 			val = getattr(self, '_' + attr)
-# 			if val is not None:
-# 				setattr(P, attr, val)
-# 		return P
+	def linearize(self):
+		P = ProblemLMPC(nx=self.nx, nu=self.nu)
+		for attr in self._attributes + self._attributes_opt:
+			val = getattr(self, '_' + attr)
+			if val is not None:
+				setattr(P, attr, val)
+		return P
 
 	def check(self):
 		undef = [
@@ -77,14 +81,14 @@ class Problem:
 			msg = f"Attributes '{', '.join(undef)}' have not been provided"
 			raise NotImplementedError(msg)
 
-	def x_next(self, xk: cs.DM, uk: cs.DM, P: dict = None, substeps=10) -> cs.DM:
+	def x_next(self, xk: cs.DM, uk: cs.DM, P: dict = None, substeps=1) -> cs.DM:
 		dt = self.dt / substeps
 		for j in range(substeps):
-			dx = self.dynamics_ct(xk, uk, P)
+			dx = self.dynamics_ct(xk=xk, uk=uk, P=P)
 			xk = xk + dt * dx
 		return xk
 
-	def update_parameters(self, u_seq: list, substeps=10):
+	def update_parameters(self, u_seq: list, substeps=1):
 		x0 = self["x0"]
 		u0 = u_seq[0]
 		P = self.parameters
@@ -96,11 +100,18 @@ class Problem:
 		vecp = []
 		for param in cls._param_keys:
 			val = P[param]
-			vecp += cs.vertsplit(val)
+			vecp = cls.extend(vecp, val)
 		return vecp
 
-	@classmethod
-	def vector2parameters(cls, vecp: list) -> dict:
+	@staticmethod
+	def extend(x, val):
+		if type(val) is list:
+			for val_i in val:
+				x = Problem.extend(x, val_i)
+			return x
+		return x + cs.vertsplit(val)
+
+	def vector2parameters(self, vecp: list) -> dict:
 		# Converts a concatenated parameter vector [p_1 ... p_r]
 		# into a dictionary of parameters
 		return {"x0": vecp}
@@ -108,11 +119,9 @@ class Problem:
 	def vector2inputs(self, vecu: cs.DM) -> list:
 		# Converts a concatenated input vector [u_0 ... u_{N-1}]
 		# into a list of inputs [[u_0], ... [u_{N-1}]]
-		N = self.N
-		nu = self.nu
 		U = []
-		for k in range(N):
-			U.append(vecu[k * nu:(k + 1) * nu])
+		for k in range(self.N):
+			U.append(vecu[k * self.nu:(k + 1) * self.nu])
 		return U
 
 	@property
@@ -186,19 +195,75 @@ class Problem:
 
 class ProblemLMPC(Problem):
 
-	def __init__(self, x_var, u_var, p_var):
-		super().__init__(x_var, u_var, p_var)
+	# Parameter names for optimization problems
+	_param_keys = ("x0", "x_seq", "u_seq")
 
-	def dynamics_dt(self, xk: cs.DM, uk: cs.DM, P: dict = None) -> cs.DM:
+	def __init__(self, nx, nu):
+		super().__init__(nx, nu)
+
+	def initialize(self, x0: cs.DM):
+		super().initialize(x0=x0)
+		u0 = [0.0] * self.nu
+		u_seq = [cs.vertcat(*u0) for k in range(self.N - 1)]
+		self["u_seq"] = u_seq
+		self["x_seq"] = self.x_sequence(x0=self["x0"], u_seq=u_seq)
+
+	def dynamics_dt(self, xk: cs.DM, uk: cs.DM, k: int, P: dict = None) -> cs.DM:
+		# k: stage
 		# P: parameter dictionary
-		x_ = P["x_"]
-		u_ = P["u_"]
-		A = self.Jxf(x_, u_)
-		B = self.Juf(x_, u_)
-		f_ = self.dynamics_ct(xk, uk, P)
+		x_ = P["x_seq"][k]
+		u_ = P["u_seq"][min(k, self.N - 2)]
+		A = self.JxF(x_, u_)
+		B = self.JuF(x_, u_)
+		f_ = self.dynamics_ct(xk=xk, uk=uk, P=P)
 		dx = xk - x_
 		du = uk - u_
 		return xk + self.dt * (f_ + A @ dx + B @ du)
+
+	def x_sequence(self, x0: cs.DM, u_seq: list, substeps=1):
+		P = self.parameters
+		x_seq = [x0]
+		xk = x0
+		for uk in u_seq:
+			xk = self.x_next(xk=xk, uk=uk, P=P, substeps=1)
+			x_seq.append(xk)
+		return x_seq
+
+	def update_parameters(self, u_seq: list, substeps=1):
+		x0 = self["x0"]
+		u0 = u_seq[0]
+		P = self.parameters
+		xk = self.x_next(xk=x0, uk=u0, P=P, substeps=substeps)
+		self["x0"] = xk
+		self["u_seq"] = u_seq[1:]
+		self["x_seq"] = self.x_sequence(x0=xk, u_seq=self["u_seq"], substeps=1)
+
+	def vector2parameters(self, vecp: list) -> dict:
+		# Converts a concatenated parameter vector [p_1 ... p_r]
+		# into a dictionary of parameters
+		# vecp is a vector of the form
+		# [x0 = x1_prev,
+		#  x0_ = x0, x1_ = x2_prev, ... x(N-1)_ = xN_prev,
+		#  u0_ = u1_prev, ... u(N-2)_ = u(N-1)_prev]
+		# where xk_, uk_ are the points of the linearization at step k
+		P = dict()
+		N = self.N
+		nx = self.nx
+		nu = self.nu
+		P["x0"] = vecp[:nx]
+		P["x_seq"] = [P["x0"]]
+		P["u_seq"] = []
+		index_u = (N + 1) * nx
+		for k in range(N - 1):
+			P["x_seq"].append(vecp[(k + 1) * nx:(k + 2) * nx])
+			P["u_seq"].append(vecp[index_u + k * nu:index_u + (k + 1) * nu])
+		return P
+
+	@Problem.N.setter
+	def N(self, N):
+		self._N = N
+		# update number of parameters ([x0, x0_, x1_ ... xN_, u0_ ... u(N-2)_])
+		self.np = self.nx * (N + 1) + self.nu * (N - 1)
 
 	@Problem.dynamics_ct.setter
 	def dynamics_ct(self, func):
@@ -287,12 +352,13 @@ class Solver:
 	def run(self, x0: cs.DM | list, steps: int, debug=False):
 		self.state_sequence = [x0]
 		self.input_sequence = []
-		self.problem["x0"] = x0 if type(x0) is cs.DM else cs.vertcat(*x0)
+		self.problem.initialize(x0=x0)
 		for k in range(steps):
 			# Print progress
 			print('.', end='\n' if k % 50 == 49 else '')
 			# Solve MPC problem
-			u_seq = self.do_one_step(debug=debug)
+			vecu = self.do_one_step(debug=debug)
+			u_seq = self.problem.vector2inputs(vecu)
 			# Apply input u0
 			self.problem.update_parameters(u_seq, substeps=self.substeps)
 			# Update state x0 in solver

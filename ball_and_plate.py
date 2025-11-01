@@ -8,7 +8,7 @@ Created on Thu Oct 30 17:25:53 2025
 
 import casadi.casadi as cs
 import opengen as og
-from Solver import Problem, Solver
+from Solver import Problem, ProblemLMPC, Solver
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -35,7 +35,7 @@ steps = 2000
 U = og.constraints.BallInf(None, 0.95)
 
 
-def dynamics_ct(xk, uk, P=None):
+def dynamics_ct(xk, uk, P: dict = None):
 	dx1 = xk[1]
 	dx2 = (5 / 7) * (xk[0] * xk[3]**2 - gravity_acceleration * cs.sin(xk[2]))
 	dx3 = xk[3]
@@ -45,17 +45,19 @@ def dynamics_ct(xk, uk, P=None):
 	return cs.vertcat(dx1, dx2, dx3, dx4)
 
 
-def stage_cost(xk, uk, P=None):
-	cost = 5 * xk[0]**2 + 0.01 * xk[1]**2 + 0.01 * xk[2]**2 + 0.05 * xk[3]**2 + 2.2 * uk[0]**2
+def stage_cost(xk, uk, k: int = None, P: dict = None):
+	cost = 5 * xk[0]**2 + 0.01 * xk[1]**2 + 0.01 * xk[2]**2 + 0.05 * xk[3]**2
+	cost += 2.2 * uk[0]**2
 	return cost
 
 
-def final_cost(xN, P=None):
+def final_cost(xN, P: dict = None):
 	cost = 100 * xN[0]**2 + 50 * xN[2]**2 + 20 * xN[1]**2 + 0.8 * xN[3]**2
 	return cost
 
 
-P = Problem(nx, nu)
+P = ProblemLMPC(nx, nu)
+# P = Problem(nx, nu)
 P.N = N
 P.dt = dt
 P.stage_cost = stage_cost
@@ -64,6 +66,8 @@ P.dynamics_ct = dynamics_ct
 P.input_constraints = U
 
 
+if isinstance(P, ProblemLMPC):
+	name += "_lmpc"
 S = Solver(problem=P, name=name)
 S.substeps = substeps
 S.initialize(build=build)
