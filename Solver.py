@@ -9,6 +9,8 @@ Created on Thu Oct 30 14:38:39 2025
 import casadi.casadi as cs
 import opengen as og
 import importlib
+import numpy as np
+import matplotlib.pyplot as plt
 
 
 # =============================================================================
@@ -28,6 +30,10 @@ class ProblemMPC:
 		self.nx = nx  # number of states
 		self.nu = nu  # number of inputs
 		self.np = nx  # number of parameters (only x0)
+		self.x_labels = [None] * nx
+		self.u_labels = [None] * nu
+		self._x_ref = None
+		self._u_ref = None
 		self.__parameters = dict()
 
 		for attr in self.__class__._attributes:
@@ -64,6 +70,35 @@ class ProblemMPC:
 			xk = self.dynamics_dt(xk=xk, uk=uk, k=k, P=P)
 		tot += self.final_cost(xN=xk, P=P)
 		return tot
+
+	def set_quadratic_stage_cost(self, Q: list | float, R: list | float):
+		x_ref = self.x_ref
+		u_ref = self.u_ref
+
+		Q = [float(Q)] * self.nx if type(Q) in (int, float) else Q
+		R = [float(R)] * self.nu if type(R) in (int, float) else R
+
+		def func(xk, uk, k: int = None, P: dict = None):
+			cost = 0.0
+			for i in range(self.nx):
+				cost += Q[i] * (xk[i] - x_ref[i])**2
+			for i in range(self.nu):
+				cost += R[i] * (uk[i] - u_ref[i])**2
+			return cost
+
+		self.stage_cost = func
+
+	def set_quadratic_final_cost(self, Qf: list | float):
+		x_ref = self.x_ref
+		Qf = [float(Qf)] * self.nx if type(Qf) in (int, float) else Qf
+
+		def func(xN, P: dict = None):
+			cost = 0.0
+			for i in range(self.nx):
+				cost += Qf[i] * (xN[i] - x_ref[i])**2
+			return cost
+
+		self.final_cost = func
 
 	def linearize(self):
 		P = ProblemLMPC(nx=self.nx, nu=self.nu)
@@ -124,6 +159,12 @@ class ProblemMPC:
 			U.append(vecu[k * self.nu:(k + 1) * self.nu])
 		return U
 
+	def x_ref_exists(self):
+		return self._x_ref is not None
+
+	def u_ref_exists(self):
+		return self._u_ref is not None
+
 	@property
 	def parameters(self):
 		return self.__parameters
@@ -167,6 +208,28 @@ class ProblemMPC:
 	@dt.setter
 	def dt(self, dt):
 		self._dt = dt
+
+	@property
+	def x_ref(self):
+		if not self.x_ref_exists():
+			print("Warning: 'x_ref' not set in Problem instance; default value 0.0 will be used")
+			return [0.0] * self.nx
+		return self._x_ref
+
+	@x_ref.setter
+	def x_ref(self, val):
+		self._x_ref = val
+
+	@property
+	def u_ref(self):
+		if not self.u_ref_exists():
+			print("Warning: 'u_ref' not set in Problem instance; default value 0.0 will be used")
+			return [0.0] * self.nu
+		return self._u_ref
+
+	@u_ref.setter
+	def u_ref(self, val):
+		self._u_ref = val
 
 	@property
 	def stage_cost(self):
@@ -334,10 +397,15 @@ class ProblemLMPC(ProblemMPC):
 class Solver:
 
 	def __init__(self, problem: ProblemMPC, name: str, folder="python_build"):
+		if isinstance(problem, ProblemLMPC0):
+			name += "_lmpc0"
+		elif isinstance(problem, ProblemLMPC):
+			name += "_lmpc"
+		elif isinstance(problem, ProblemMPC):
+			name += "_mpc"
 		self.name = name
 		self.folder = folder
 		self.problem = problem
-		self.substeps = 1  # for updating the state after every MPC solution
 
 	def check(self):
 		self.problem.check()
@@ -384,7 +452,7 @@ class Solver:
 			meta, build_config, solver_config)
 		return builder
 
-	def do_one_step(self, debug=False) -> list:
+	def solve(self, debug=False) -> list:
 		if debug:
 			# TODO
 			raise NotImplementedError
@@ -396,16 +464,36 @@ class Solver:
 		u_seq = self.problem.vector2inputs(self.solution)
 		return u_seq
 
+
+# =============================================================================
+# Simulation class
+# =============================================================================
+
+class Simulation:
+
+	def __init__(self, solver: Solver):
+		self.solver = solver
+		self.substeps = 1  # for updating the state after every MPC solution
+
+	def initialize_plots(self):
+		pass
+
+	def update_plots(self):
+		pass
+
 	def run(self, x0: cs.DM | list, steps: int, debug=False):
 		self.state_sequence = [x0]
 		self.input_sequence = []
 		self.problem.initialize(x0=x0)
+		self.initialize_plots()
+		print_every = 10
+		newline_every = 50
 		for k in range(steps):
 			# Print progress
-			if k % 10 == 9:
-				print('.', end='\n' if k % 500 == 499 else '')
+			if (k + 1) % print_every == 0:
+				print('.', end='\n' if (k + 1) % (print_every * newline_every) == 0 else '')
 			# Solve MPC problem
-			u_seq = self.do_one_step(debug=debug)
+			u_seq = self.solver.solve(debug=debug)
 			# Apply input u0
 			self.problem.update_parameters(u_seq, substeps=self.substeps)
 			# Update state x0 in solver
@@ -413,43 +501,46 @@ class Solver:
 			# Record data
 			self.state_sequence.append(x0)
 			self.input_sequence.append(u_seq[0])
+			self.update_plots()
 
+	def plot_sequence(self, states: list = None, inputs: list = None, show_labels=True):
+		ss = self.state_sequence
+		uu = self.input_sequence
+		dt = self.problem.dt
+		time = np.linspace(0, dt * len(ss), num=len(ss))
 
-# =============================================================================
-# Simulation class
-# =============================================================================
+		if not (states or inputs):
+			# plot everything
+			states = range(self.problem.nx)
+			inputs = range(self.problem.nu)
+		if not states:
+			states = []
+		if not inputs:
+			inputs = []
 
-# class Simulation:
+		# references
+		if self.problem.x_ref_exists():
+			for i in states:
+				plt.plot([time[0], time[-1]], [self.problem.x_ref[i]] * 2, 'k--')
+		if self.problem.u_ref_exists():
+			for i in inputs:
+				plt.plot([time[0], time[-1]], [self.problem.u_ref[i]] * 2, 'k--')
 
-# 	def __init__(self, solver: Solver):
-# 		self.solver = solver
+		# sequences
+		for i in states:
+			kwargs = {'linewidth': 2}
+			if show_labels and self.problem.x_labels[i]:
+				kwargs['label'] = self.problem.x_labels[i]
+			plt.plot(time, [float(x[i]) for x in ss], '-', **kwargs)
+		for i in inputs:
+			kwargs = {'linewidth': 2}
+			if show_labels and self.problem.u_labels[i]:
+				kwargs['label'] = self.problem.u_labels[i]
+			plt.plot(time[:-1], [float(u[i]) for u in uu], '-', **kwargs)
 
-# 	def initialize_plots(self):
-# 		pass
+		plt.grid()
+		plt.xlabel('Time')
 
-# 	def update_plots(self):
-# 		pass
-
-# 	def run(self, x0: cs.DM | list, steps: int, debug=False):
-# 		self.state_sequence = [x0]
-# 		self.input_sequence = []
-# 		self.problem.initialize(x0=x0)
-# 		self.initialize_plots()
-# 		for k in range(steps):
-# 			# Print progress
-# 			print('.', end='\n' if k % 50 == 49 else '')
-# 			# Solve MPC problem
-# 			vecu = self.solver.do_one_step(debug=debug)
-# 			u_seq = self.problem.vector2inputs(vecu)
-# 			# Apply input u0
-# 			self.problem.update_parameters(u_seq, substeps=self.substeps)
-# 			# Update state x0 in solver
-# 			x0 = self.problem["x0"]
-# 			# Record data
-# 			self.state_sequence.append(x0)
-# 			self.input_sequence.append(u_seq[0])
-# 			self.update_plots()
-
-# 	@property
-# 	def problem(self):
-# 		return self.solver.problem
+	@property
+	def problem(self):
+		return self.solver.problem

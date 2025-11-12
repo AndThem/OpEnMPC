@@ -8,9 +8,8 @@ Created on Thu Oct 30 17:25:53 2025
 
 import casadi.casadi as cs
 import opengen as og
-from Solver import ProblemMPC, ProblemLMPC, ProblemLMPC0, Solver
+from Solver import ProblemMPC, ProblemLMPC, ProblemLMPC0, Solver, Simulation
 
-import numpy as np
 import matplotlib.pyplot as plt
 
 build = False
@@ -21,12 +20,13 @@ folder = "python_build"
 
 # =============================================================================
 # Define problem
+# https://alphaville.github.io/optimization-engine/docs/example_bnp_py
 # =============================================================================
 
 # Parameters (no need to rebuild after changing these)
+x0 = [0.1, -0.5, 0.0, 0.0]
 substeps = 10
 steps = 2000
-x0 = [0.1, -0.5, 0.0, 0.0]
 
 # Problem data
 nx = 4
@@ -35,12 +35,11 @@ N = 15
 dt = 0.01
 
 # Cost
+Q = [5.0, 0.01, 0.01, 0.05]
+R = [0.5]
+Qf = [100.0, 20.0, 50.0, 0.8]
 x_ref = [0.0] * nx
 u_ref = [0.0] * nu
-
-Q = [5.0, 0.01, 0.01, 0.05]
-Qf = [100.0, 20.0, 50.0, 0.8]
-R = [0.5]
 
 # Constraints
 U = og.constraints.BallInf(None, 0.95)
@@ -61,22 +60,6 @@ def dynamics_ct(x, u, P: dict = None):
 	return cs.vertcat(dx1, dx2, dx3, dx4)
 
 
-def stage_cost(xk, uk, k: int = None, P: dict = None):
-	cost = 0.0
-	for i in range(nx):
-		cost += Q[i] * (xk[i] - x_ref[i])**2
-	for i in range(nu):
-		cost += R[i] * uk[i]**2
-	return cost
-
-
-def final_cost(xN, P: dict = None):
-	cost = 0.0
-	for i in range(nx):
-		cost += Qf[i] * (xN[i] - x_ref[i])**2
-	return cost
-
-
 # =============================================================================
 # Construct problem instance
 # =============================================================================
@@ -84,54 +67,44 @@ def final_cost(xN, P: dict = None):
 # P = ProblemLMPC0(nx, nu)
 # P = ProblemLMPC(nx, nu)
 P = ProblemMPC(nx, nu)
+P.x_labels = ["Position", "Angle", "Velocity", "Angular velocity"]
 P.N = N
 P.dt = dt
-P.stage_cost = stage_cost
-P.final_cost = final_cost
+P.x_ref = x_ref
+P.u_ref = u_ref
 P.dynamics_ct = dynamics_ct
 P.input_constraints = U
 
+P.set_quadratic_stage_cost(Q=Q, R=R)
+P.set_quadratic_final_cost(Qf=Qf)
+
 
 # =============================================================================
-# Construct solver
+# Construct solver and run simulation
 # =============================================================================
 
-if isinstance(P, ProblemLMPC0):
-	name += "_lmpc0"
-elif isinstance(P, ProblemLMPC):
-	name += "_lmpc"
 S = Solver(problem=P, name=name, folder=folder)
-S.substeps = substeps
 S.initialize(build=build)
-S.run(x0, steps)
+
+simulation = Simulation(S)
+simulation.substeps = substeps
+simulation.run(x0, steps)
 
 
 # =============================================================================
 # Plot
 # =============================================================================
 
-ss = S.state_sequence
-uu = S.input_sequence
-time = np.arange(0, dt * steps, dt)
-
 plt.subplot(1, 3, 1)
-plt.plot([time[0], time[-1]], [x_ref[0]] * 2, 'k--')
-plt.plot(time, [float(x[0]) for x in ss[:-1]], '-', linewidth=2)
-plt.grid()
 plt.title('Position')
-plt.xlabel('Time')
+simulation.plot_sequence(states=[0], show_labels=False)
 
 plt.subplot(1, 3, 2)
-plt.plot([time[0], time[-1]], [x_ref[1]] * 2, 'k--')
-plt.plot(time, [float(x[1]) for x in ss[:-1]], '-', linewidth=2)
-plt.grid()
 plt.title('Angle')
-plt.xlabel('Time')
+simulation.plot_sequence(states=[1], show_labels=False)
 
 plt.subplot(1, 3, 3)
-plt.plot([time[0], time[-1]], [u_ref[0]] * 2, 'k--')
-plt.plot(time, [float(u[0]) for u in uu], '-', linewidth=2)
 plt.title('Input')
-plt.grid()
+simulation.plot_sequence(inputs=[0], show_labels=False)
 
 plt.show()

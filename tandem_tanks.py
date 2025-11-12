@@ -8,9 +8,8 @@ Created on Thu Oct 30 17:25:53 2025
 
 import casadi.casadi as cs
 import opengen as og
-from Solver import ProblemMPC, ProblemLMPC, ProblemLMPC0, Solver
+from Solver import ProblemMPC, ProblemLMPC, ProblemLMPC0, Solver, Simulation
 
-import numpy as np
 import matplotlib.pyplot as plt
 
 build = False
@@ -28,7 +27,6 @@ x0 = [65.0, 52.0]
 steps = 2000
 substeps = 10
 
-
 # Problem data (need to rebuild after changing these)
 nx = 2
 nu = 1
@@ -36,12 +34,11 @@ dt = 15
 N = 15
 
 # Cost
+Q = [10.0, 10.0]
+R = [0.5]
+Qf = [50.0, 50.0]
 x_ref = [56.0, 50.0]
 u_ref = [10.6]
-
-Q = [1.0, 1.0]
-Qf = [50.0, 50.0]
-R = [0.5]
 
 # Constraints
 U = og.constraints.Rectangle([8.0] * N, [11.0] * N)
@@ -60,73 +57,49 @@ def dynamics_ct(x, u, P: dict = None):
 	return cs.vertcat(dx1, dx2)
 
 
-def stage_cost(xk, uk, k: int = None, P: dict = None):
-	cost = 0.0
-	for i in range(nx):
-		cost += Q[i] * (xk[i] - x_ref[i])**2
-	for i in range(nu):
-		cost += R[i] * (uk[i] - u_ref[i])**2
-	return cost
-
-
-def final_cost(xN, P: dict = None):
-	cost = 0.0
-	for i in range(nx):
-		cost += Qf[i] * (xN[i] - x_ref[i])**2
-	return cost
-
-
 # =============================================================================
 # Construct problem instance
+# https://alphaville.github.io/optimization-engine/docs/example_tanks_py
 # =============================================================================
 
 # P = ProblemLMPC0(nx, nu)
 # P = ProblemLMPC(nx, nu)
 P = ProblemMPC(nx, nu)
+P.x_labels = ["h1", "h2"]
 P.N = N
 P.dt = dt
-P.stage_cost = stage_cost
-P.final_cost = final_cost
+P.x_ref = x_ref
+P.u_ref = u_ref
 P.dynamics_ct = dynamics_ct
 P.input_constraints = U
 
+P.set_quadratic_stage_cost(Q=Q, R=R)
+P.set_quadratic_final_cost(Qf=Qf)
+
 
 # =============================================================================
-# Construct solver
+# Construct solver and run simulation
 # =============================================================================
 
-if isinstance(P, ProblemLMPC0):
-	name += "_lmpc0"
-elif isinstance(P, ProblemLMPC):
-	name += "_lmpc"
 S = Solver(problem=P, name=name, folder=folder)
-S.substeps = substeps
 S.initialize(build=build)
-S.run(x0, steps)
+
+simulation = Simulation(S)
+simulation.substeps = substeps
+simulation.run(x0, steps)
 
 
 # =============================================================================
 # Plot
 # =============================================================================
 
-ss = S.state_sequence
-uu = S.input_sequence
-time = np.arange(0, dt * steps, dt)
-
 plt.subplot(1, 2, 1)
-plt.plot([time[0], time[-1]], [x_ref[0]] * 2, 'k--')
-plt.plot([time[0], time[-1]], [x_ref[1]] * 2, 'k--')
-plt.plot(time, [float(x[0]) for x in ss[:-1]], '-', label="h1", linewidth=2)
-plt.plot(time, [float(x[1]) for x in ss[:-1]], '-', label="h2", linewidth=2)
-plt.grid()
 plt.title('States')
-plt.xlabel('Time')
-plt.legend(bbox_to_anchor=(0.7, 0.85), loc='upper left', borderaxespad=0.)
+simulation.plot_sequence(states=[0, 1])
+plt.legend()
 
 plt.subplot(1, 2, 2)
-plt.plot([time[0], time[-1]], [u_ref[0]] * 2, 'k--')
-plt.plot(time, [float(u[0]) for u in uu], '-', linewidth=2)
 plt.title('Input')
-plt.grid()
+simulation.plot_sequence(inputs=[0])
 
 plt.show()
