@@ -24,9 +24,9 @@ class ProblemMPC:
 	# Parameter names for optimization problems
 	_param_keys = ("x0", )
 
-	def __init__(self, nx, nu):
-		self.nx = nx
-		self.nu = nu
+	def __init__(self, nx: int, nu: int):
+		self.nx = nx  # number of states
+		self.nu = nu  # number of inputs
 		self.np = nx  # number of parameters (only x0)
 		self.__parameters = dict()
 
@@ -36,10 +36,10 @@ class ProblemMPC:
 		for attr in self.__class__._attributes_opt:
 			setattr(self, "_" + attr, [])
 
-	def __getitem__(self, key):
+	def __getitem__(self, key: str):
 		return self.__parameters[key]
 
-	def __setitem__(self, key, val):
+	def __setitem__(self, key: str, val: cs.DM | list):
 		if key not in self._param_keys:
 			msg = f"only keys in {self._param_keys} allowed (got {key} instead)"
 			raise KeyError(msg)
@@ -96,7 +96,7 @@ class ProblemMPC:
 
 	@classmethod
 	def parameters2vector(cls, P: dict) -> list:
-		# converts dictionary of paramters to a list
+		"""Converts dictionary of paramters to a list"""
 		vecp = []
 		for param in cls._param_keys:
 			val = P[param]
@@ -104,7 +104,7 @@ class ProblemMPC:
 		return vecp
 
 	@staticmethod
-	def extend(x, val):
+	def extend(x: list, val: list | float) -> list:
 		if type(val) is list:
 			for val_i in val:
 				x = ProblemMPC.extend(x, val_i)
@@ -112,13 +112,13 @@ class ProblemMPC:
 		return x + cs.vertsplit(val)
 
 	def vector2parameters(self, vecp: list) -> dict:
-		# Converts a concatenated parameter vector [p_1 ... p_r]
-		# into a dictionary of parameters
+		"""Converts a concatenated parameter vector [p_1 ... p_r]
+		into a dictionary of parameters"""
 		return {"x0": vecp}
 
 	def vector2inputs(self, vecu: cs.DM) -> list:
-		# Converts a concatenated input vector [u_0 ... u_{N-1}]
-		# into a list of inputs [[u_0], ... [u_{N-1}]]
+		"""Converts a concatenated input vector [u_0 ... u_{N-1}]
+		into a list of inputs [[u_0], ... [u_{N-1}]]"""
 		U = []
 		for k in range(self.N):
 			U.append(vecu[k * self.nu:(k + 1) * self.nu])
@@ -210,7 +210,7 @@ class ProblemLMPC0(ProblemMPC):
 	# Parameter names for optimization problems
 	_param_keys = ("x0", "u0")
 
-	def __init__(self, nx, nu):
+	def __init__(self, nx: int, nu: int):
 		super().__init__(nx, nu)
 		self.np = nx + nu
 
@@ -240,10 +240,10 @@ class ProblemLMPC0(ProblemMPC):
 		self["u0"] = u_seq[1]
 
 	def vector2parameters(self, vecp: list) -> dict:
-		# Converts a concatenated parameter vector [p_1 ... p_r]
-		# into a dictionary of parameters
-		# vecp is a vector of the form
-		# [x0 = x1_prev, u0 = u1_prev]
+		"""Converts a concatenated parameter vector [p_1 ... p_r]
+		into a dictionary of parameters
+		vecp is a vector of the form
+		[x0 = x1_prev, u0 = u1_prev]"""
 		P = dict()
 		P["x0"] = vecp[:self.nx]
 		P["u0"] = vecp[self.nx:]
@@ -259,7 +259,7 @@ class ProblemLMPC(ProblemMPC):
 	# Parameter names for optimization problems
 	_param_keys = ("x0", "x_seq", "u_seq")
 
-	def __init__(self, nx, nu):
+	def __init__(self, nx: int, nu: int):
 		super().__init__(nx, nu)
 
 	def initialize(self, x0: cs.DM):
@@ -300,13 +300,13 @@ class ProblemLMPC(ProblemMPC):
 		self["x_seq"] = self.x_sequence(x0=xk, u_seq=self["u_seq"], substeps=1)
 
 	def vector2parameters(self, vecp: list) -> dict:
-		# Converts a concatenated parameter vector [p_1 ... p_r]
-		# into a dictionary of parameters
-		# vecp is a vector of the form
-		# [x0 = x1_prev,
-		#  x0_ = x0, x1_ = x2_prev, ... x(N-1)_ = xN_prev,
-		#  u0_ = u1_prev, ... u(N-2)_ = u(N-1)_prev]
-		# where xk_, uk_ are the points of the linearization at step k
+		"""Converts a concatenated parameter vector [p_1 ... p_r]
+		into a dictionary of parameters
+		vecp is a vector of the form
+		[x0 = x1_prev,
+		x0_ = x0, x1_ = x2_prev, ... x(N-1)_ = xN_prev,
+		u0_ = u1_prev, ... u(N-2)_ = u(N-1)_prev]
+		where xk_, uk_ are the points of the linearization at step k"""
 		P = dict()
 		N = self.N
 		nx = self.nx
@@ -321,7 +321,7 @@ class ProblemLMPC(ProblemMPC):
 		return P
 
 	@ProblemMPC.N.setter
-	def N(self, N):
+	def N(self, N: int):
 		self._N = N
 		# update number of parameters ([x0, x0_, x1_ ... xN_, u0_ ... u(N-2)_])
 		self.np = self.nx * (N + 1) + self.nu * (N - 1)
@@ -362,9 +362,10 @@ class Solver:
 		P = self.problem.vector2parameters(vecp)
 		# construct problem
 		cost = self.problem.cost(U, P)
+		problem = og.builder.Problem(vecu, vecp, cost)
 		input_constraints = self.problem.input_constraints
-		problem = og.builder.Problem(vecu, vecp, cost) \
-			.with_constraints(input_constraints)
+		if input_constraints:
+			problem = problem.with_constraints(input_constraints)
 		return problem
 
 	def make_builder(self, problem: og.builder.problem.Problem, tol: float):
@@ -383,7 +384,7 @@ class Solver:
 			meta, build_config, solver_config)
 		return builder
 
-	def do_one_step(self, debug=False):
+	def do_one_step(self, debug=False) -> list:
 		if debug:
 			# TODO
 			raise NotImplementedError
@@ -392,7 +393,8 @@ class Solver:
 		init = self.solution[nu:] + self.solution[-nu:]
 		out = self.solver.run(p=vecp, initial_guess=init)
 		self.solution = out.solution
-		return self.problem.vector2inputs(self.solution)
+		u_seq = self.problem.vector2inputs(self.solution)
+		return u_seq
 
 	def run(self, x0: cs.DM | list, steps: int, debug=False):
 		self.state_sequence = [x0]
@@ -400,10 +402,10 @@ class Solver:
 		self.problem.initialize(x0=x0)
 		for k in range(steps):
 			# Print progress
-			print('.', end='\n' if k % 50 == 49 else '')
+			if k % 10 == 9:
+				print('.', end='\n' if k % 500 == 499 else '')
 			# Solve MPC problem
-			vecu = self.do_one_step(debug=debug)
-			u_seq = self.problem.vector2inputs(vecu)
+			u_seq = self.do_one_step(debug=debug)
 			# Apply input u0
 			self.problem.update_parameters(u_seq, substeps=self.substeps)
 			# Update state x0 in solver
@@ -411,3 +413,43 @@ class Solver:
 			# Record data
 			self.state_sequence.append(x0)
 			self.input_sequence.append(u_seq[0])
+
+
+# =============================================================================
+# Simulation class
+# =============================================================================
+
+# class Simulation:
+
+# 	def __init__(self, solver: Solver):
+# 		self.solver = solver
+
+# 	def initialize_plots(self):
+# 		pass
+
+# 	def update_plots(self):
+# 		pass
+
+# 	def run(self, x0: cs.DM | list, steps: int, debug=False):
+# 		self.state_sequence = [x0]
+# 		self.input_sequence = []
+# 		self.problem.initialize(x0=x0)
+# 		self.initialize_plots()
+# 		for k in range(steps):
+# 			# Print progress
+# 			print('.', end='\n' if k % 50 == 49 else '')
+# 			# Solve MPC problem
+# 			vecu = self.solver.do_one_step(debug=debug)
+# 			u_seq = self.problem.vector2inputs(vecu)
+# 			# Apply input u0
+# 			self.problem.update_parameters(u_seq, substeps=self.substeps)
+# 			# Update state x0 in solver
+# 			x0 = self.problem["x0"]
+# 			# Record data
+# 			self.state_sequence.append(x0)
+# 			self.input_sequence.append(u_seq[0])
+# 			self.update_plots()
+
+# 	@property
+# 	def problem(self):
+# 		return self.solver.problem
