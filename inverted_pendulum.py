@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Thu Oct 30 17:25:53 2025
+Created on Tue Nov 11 17:51:17 2025
 
 @author: andthem
 """
@@ -16,48 +16,53 @@ import matplotlib.pyplot as plt
 build = False
 build = True
 
-name = "ball_and_plate"
+name = "inverted_pendulum"
 folder = "python_build"
 
 # =============================================================================
 # Define problem
+# https://onlinelibrary.wiley.com/doi/epdf/10.1002/rnc.70083
 # =============================================================================
 
 # Parameters (no need to rebuild after changing these)
-substeps = 10
+x0 = [0.0, cs.pi, 0.0, 0.0]
 steps = 2000
-x0 = [0.1, -0.5, 0.0, 0.0]
+substeps = 10
 
-# Problem data
+# Problem data (need to rebuild after changing these)
 nx = 4
 nu = 1
-N = 15
-dt = 0.01
+N = 20
+dt = 0.05
 
 # Cost
 x_ref = [0.0] * nx
 u_ref = [0.0] * nu
 
-Q = [5.0, 0.01, 0.01, 0.05]
-Qf = [100.0, 20.0, 50.0, 0.8]
-R = [0.5]
+Q = [2.5, 50.0, 0.01, 0.01]
+Qf = [3.0, 50.0, 0.02, 0.02]
+R = [0.1]
 
 # Constraints
-U = og.constraints.BallInf(None, 0.95)
+U = og.constraints.BallInf(None, 15.0)
 
 # Dynamics
-mass_ball = 1
-moment_inertia = 0.0005
-g = 9.8044
+mc, mp, l, g = 1.0, 0.2, 1.0, 9.81
 
 
 def dynamics_ct(x, u, P: dict = None):
-	dx1 = x[1]
-	dx2 = (5 / 7) * (x[0] * x[3]**2 - g * cs.sin(x[2]))
-	dx3 = x[3]
-	dx4 = (u[0] - mass_ball * g * x[0] * cs.cos(x[2])
-		- 2 * mass_ball * x[0] * x[1] * x[3]) \
-		/ (mass_ball * x[0]**2 + moment_inertia)
+	s = cs.sin(x[1])
+	c = cs.cos(x[1])
+
+	dx1 = x[2]
+	dx2 = x[3]
+
+	dx3 = -mp * l * x[3]**2 * s + mp * g * s * c + u[0]
+	dx3 = dx3 / (mc + mp * c**2)
+
+	dx4 = -mp * l * x[3]**2 * s * c + (mc + mp) * g * s + u[0] * c
+	dx4 = dx4 / (l * (mc + mp * c**2))
+
 	return cs.vertcat(dx1, dx2, dx3, dx4)
 
 
@@ -66,7 +71,7 @@ def stage_cost(xk, uk, k: int = None, P: dict = None):
 	for i in range(nx):
 		cost += Q[i] * (xk[i] - x_ref[i])**2
 	for i in range(nu):
-		cost += R[i] * uk[i]**2
+		cost += R[i] * (uk[i] - u_ref[i])**2
 	return cost
 
 
@@ -116,14 +121,14 @@ time = np.arange(0, dt * steps, dt)
 
 plt.subplot(1, 3, 1)
 plt.plot([time[0], time[-1]], [x_ref[0]] * 2, 'k--')
-plt.plot(time, [float(x[0]) for x in ss[:-1]], '-', linewidth=2)
+plt.plot(time, [float(x[0]) for x in ss[:-1]], '-')
 plt.grid()
 plt.title('Position')
 plt.xlabel('Time')
 
 plt.subplot(1, 3, 2)
 plt.plot([time[0], time[-1]], [x_ref[1]] * 2, 'k--')
-plt.plot(time, [float(x[1]) for x in ss[:-1]], '-', linewidth=2)
+plt.plot(time, [float(x[1]) for x in ss[:-1]], '-')
 plt.grid()
 plt.title('Angle')
 plt.xlabel('Time')

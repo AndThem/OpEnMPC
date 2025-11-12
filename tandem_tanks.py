@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 build = False
 build = True
 
-name = "ball_and_plate"
+name = "tandem_tanks"
 folder = "python_build"
 
 # =============================================================================
@@ -24,41 +24,40 @@ folder = "python_build"
 # =============================================================================
 
 # Parameters (no need to rebuild after changing these)
-substeps = 10
+x0 = [65.0, 52.0]
 steps = 2000
-x0 = [0.1, -0.5, 0.0, 0.0]
+substeps = 10
 
-# Problem data
-nx = 4
+
+# Problem data (need to rebuild after changing these)
+nx = 2
 nu = 1
+dt = 15
 N = 15
-dt = 0.01
 
 # Cost
-x_ref = [0.0] * nx
-u_ref = [0.0] * nu
+x_ref = [56.0, 50.0]
+u_ref = [10.6]
 
-Q = [5.0, 0.01, 0.01, 0.05]
-Qf = [100.0, 20.0, 50.0, 0.8]
+Q = [1.0, 1.0]
+Qf = [50.0, 50.0]
 R = [0.5]
 
 # Constraints
-U = og.constraints.BallInf(None, 0.95)
+U = og.constraints.Rectangle([8.0] * N, [11.0] * N)
 
 # Dynamics
-mass_ball = 1
-moment_inertia = 0.0005
-g = 9.8044
+a1, a2 = 10 * 1e-4, 10 * 1.5e-4
+A1, A2 = 2.5, 0.1
+rho, g = 998, 9.8044
 
 
 def dynamics_ct(x, u, P: dict = None):
-	dx1 = x[1]
-	dx2 = (5 / 7) * (x[0] * x[3]**2 - g * cs.sin(x[2]))
-	dx3 = x[3]
-	dx4 = (u[0] - mass_ball * g * x[0] * cs.cos(x[2])
-		- 2 * mass_ball * x[0] * x[1] * x[3]) \
-		/ (mass_ball * x[0]**2 + moment_inertia)
-	return cs.vertcat(dx1, dx2, dx3, dx4)
+	h1 = x[0]
+	h2 = x[1]
+	dx1 = u[0] / (rho * A1) - (a1 / A1) * cs.sqrt(2 * g * (h1 - h2))
+	dx2 = (a1 * cs.sqrt(2 * g * (h1 - h2)) - a2 * cs.sqrt(h2)) / A2
+	return cs.vertcat(dx1, dx2)
 
 
 def stage_cost(xk, uk, k: int = None, P: dict = None):
@@ -66,7 +65,7 @@ def stage_cost(xk, uk, k: int = None, P: dict = None):
 	for i in range(nx):
 		cost += Q[i] * (xk[i] - x_ref[i])**2
 	for i in range(nu):
-		cost += R[i] * uk[i]**2
+		cost += R[i] * (uk[i] - u_ref[i])**2
 	return cost
 
 
@@ -114,21 +113,17 @@ ss = S.state_sequence
 uu = S.input_sequence
 time = np.arange(0, dt * steps, dt)
 
-plt.subplot(1, 3, 1)
+plt.subplot(1, 2, 1)
 plt.plot([time[0], time[-1]], [x_ref[0]] * 2, 'k--')
-plt.plot(time, [float(x[0]) for x in ss[:-1]], '-', linewidth=2)
-plt.grid()
-plt.title('Position')
-plt.xlabel('Time')
-
-plt.subplot(1, 3, 2)
 plt.plot([time[0], time[-1]], [x_ref[1]] * 2, 'k--')
-plt.plot(time, [float(x[1]) for x in ss[:-1]], '-', linewidth=2)
+plt.plot(time, [float(x[0]) for x in ss[:-1]], '-', label="h1", linewidth=2)
+plt.plot(time, [float(x[1]) for x in ss[:-1]], '-', label="h2", linewidth=2)
 plt.grid()
-plt.title('Angle')
+plt.title('States')
 plt.xlabel('Time')
+plt.legend(bbox_to_anchor=(0.7, 0.85), loc='upper left', borderaxespad=0.)
 
-plt.subplot(1, 3, 3)
+plt.subplot(1, 2, 2)
 plt.plot([time[0], time[-1]], [u_ref[0]] * 2, 'k--')
 plt.plot(time, [float(u[0]) for u in uu], '-', linewidth=2)
 plt.title('Input')
